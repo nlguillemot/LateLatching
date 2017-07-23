@@ -43,7 +43,7 @@ static_assert((INPUT_BUFFER_SIZE & (INPUT_BUFFER_SIZE - 1)) == 0, "");
 
 #define INPUT_BUFFER_SIZE_IN_BYTES (INPUT_BUFFER_SIZE * sizeof(InputBufferItem))
 
-#define CURSOR_SIZE 64
+#define CURSOR_SIZE 32
 
 // GLSL bindings
 #define INPUT_BUFFER_SSBO_BINDING           0
@@ -63,6 +63,8 @@ volatile InputBufferItem* g_MappedInputBufferItems;
 volatile uint32_t* g_MappedInputCounter;
 uint32_t g_InputCounter;
 
+static HCURSOR hCustomCursor = LoadCursorFromFile(TEXT("Ragnarok.ani"));
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -72,9 +74,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_SETCURSOR:
         if (g_CurrLatchMode == LATCHMODE_SETCURSOR)
         {
-            static HCURSOR hCursor = LoadCursorFromFile(TEXT("Ragnarok.ani"));
-            assert(hCursor != NULL);
-            SetCursor(hCursor);
+            assert(hCustomCursor != NULL);
+            SetCursor(hCustomCursor);
         }
         else
         {
@@ -227,11 +228,6 @@ int main()
     glDebugMessageCallback(DebugCallbackGL, 0);
 #endif
 
-    printf("GL_VENDOR: %s\n", glGetString(GL_VENDOR));
-    printf("GL_RENDERER: %s\n", glGetString(GL_RENDERER));
-    printf("GL_VERSION: %s\n", glGetString(GL_VERSION));
-    printf("\n");
-
     ImGui_Impl_Init(hWnd);
 
     const std::string preamble =
@@ -302,6 +298,10 @@ out vec4 FragColor;
 void main()
 {
     FragColor = texture(CursorTexture, TexCoord);
+    if (FragColor.a == 0.0)
+    {
+        discard;
+    }
 }
 )GLSL"
     };
@@ -347,27 +347,28 @@ void main()
     GLuint fs = CompileShader(GL_FRAGMENT_SHADER, _countof(fs_srcs), fs_srcs);
     GLuint sp = LinkProgram(vs, fs);
 
-    const int kCursorSize = 64;
-    unsigned char cursorPixelData[kCursorSize * kCursorSize * 4];
-    for (int y = 0; y < kCursorSize; y++)
-    {
-        for (int x = 0; x < kCursorSize; x++)
-        {
-            unsigned char c = x <= y ? 127 : 0;
-            cursorPixelData[4 * (y * kCursorSize + x) + 0] = c;
-            cursorPixelData[4 * (y * kCursorSize + x) + 1] = c;
-            cursorPixelData[4 * (y * kCursorSize + x) + 2] = c;
-            cursorPixelData[4 * (y * kCursorSize + x) + 3] = c; // premultiplied alpha
-        }
-    }
-
     // Initialize the cursor texture
     GLuint cursorTexture;
     glGenTextures(1, &cursorTexture);
     glBindTexture(GL_TEXTURE_2D, cursorTexture);
-    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, kCursorSize, kCursorSize);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, kCursorSize, kCursorSize, GL_RGBA, GL_UNSIGNED_BYTE, cursorPixelData);
+    glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, CURSOR_SIZE, CURSOR_SIZE);
     glBindTexture(GL_TEXTURE_2D, 0);
+
+    GLuint cursorUploadBuffer;
+    glGenBuffers(1, &cursorUploadBuffer);
+    glBindBuffer(GL_ARRAY_BUFFER, cursorUploadBuffer);
+    glBufferStorage(GL_ARRAY_BUFFER, CURSOR_SIZE * CURSOR_SIZE * 4, NULL, GL_CLIENT_STORAGE_BIT | GL_MAP_WRITE_BIT);
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    // Create DC to decode the cursor
+    HDC hdcMem = CreateCompatibleDC(hDC);
+    // Create the bitmap to use as a canvas.
+    HBITMAP hbmCanvas = CreateCompatibleBitmap(hDC, CURSOR_SIZE, CURSOR_SIZE);
+
+    // Select the bitmap into the device context.
+    HGDIOBJ hbmOld = SelectObject(hdcMem, hbmCanvas);
+
+    uint64_t cursorTimeline = 0;
 
     GLuint nullVAO;
     glGenVertexArrays(1, &nullVAO);
@@ -400,8 +401,24 @@ void main()
     g_MappedInputBufferItems = pInputBuffer;
     g_MappedInputCounter = pInputCounter;
 
+    bool finishAtEndOfFrame = true;
+
+    PFNWGLGETEXTENSIONSSTRINGARBPROC wglGetExtensionsStringARB = (PFNWGLGETEXTENSIONSSTRINGARBPROC)wglGetProcAddress("wglGetExtensionsStringARB");
+
+    PFNWGLSWAPINTERVALEXTPROC wglSwapIntervalEXT = (PFNWGLSWAPINTERVALEXTPROC)wglGetProcAddress("wglSwapIntervalEXT");
+    bool adaptiveVSyncSupported = strstr(wglGetExtensionsStringARB(hDC), "WGL_EXT_swap_control_tear") != NULL;
+    bool adaptiveVSync = false;
+    int swapInterval = 0;
+    bool swapIntervalOK = true;
+
+    ULONGLONG then = GetTickCount64();
+
     for (;;)
     {
+        ULONGLONG now = GetTickCount64();
+        ULONGLONG dt = now - then;
+        cursorTimeline += dt;
+
         // Handle all events
         MSG msg;
         while (PeekMessage(&msg, NULL, 0, 0, PM_REMOVE))
@@ -412,8 +429,12 @@ void main()
 
         ImGui_Impl_NewFrame(hWnd);
 
-        if (ImGui::Begin("Options", 0, ImGuiWindowFlags_AlwaysAutoResize))
+        if (ImGui::Begin("GUI", 0, ImGuiWindowFlags_AlwaysAutoResize))
         {
+            ImGui::Text("GL_VENDOR: %s\n", glGetString(GL_VENDOR));
+            ImGui::Text("GL_RENDERER: %s\n", glGetString(GL_RENDERER));
+            ImGui::Text("GL_VERSION: %s\n", glGetString(GL_VERSION));
+
             const char* latchModeNames[LATCHMODE_COUNT] = {};
             latchModeNames[LATCHMODE_LATE] = "Late-Latching";
             latchModeNames[LATCHMODE_SETCURSOR] = "Win32 SetCursor";
@@ -424,21 +445,122 @@ void main()
             }
 
             ImGui::ListBox("Mode", &g_CurrLatchMode, latchModeNames, LATCHMODE_COUNT);
+
+            if (adaptiveVSyncSupported)
+            {
+                if (ImGui::Checkbox("Adaptive VSync", &adaptiveVSync))
+                {
+                    if (adaptiveVSync)
+                    {
+                        swapIntervalOK = wglSwapIntervalEXT(-1);
+                    }
+                }
+            }
+            else
+            {
+                ImGui::Text("Adaptive VSync not supported (missing WGL_EXT_swap_control_tear)");
+            }
+
+            if (adaptiveVSync)
+            {
+                ImGui::Text("Disable Adaptive VSync to set the Swap Interval");
+            }
+            else
+            {
+                if (ImGui::InputInt("Swap Interval", &swapInterval))
+                {
+                    if (swapInterval < 0)
+                        swapInterval = 0;
+
+                    swapIntervalOK = wglSwapIntervalEXT(swapInterval);
+                }
+            }
+            
+            if (!swapIntervalOK)
+            {
+                if (adaptiveVSync)
+                {
+                    ImGui::Text("Setting adaptive VSync failed");
+                }
+                else
+                {
+                    ImGui::Text("Setting swap interval failed");
+
+                }
+            }
+
+            ImGui::Checkbox("glFinish at end of frame", &finishAtEndOfFrame);
         }
         ImGui::End();
 
-        const GLuint kResetLatch = INPUT_BUFFER_SIZE;
-        glBindBuffer(GL_ARRAY_BUFFER, latchedCounterBuffer);
-        glClearBufferData(GL_ARRAY_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, &kResetLatch);
-        glBindBuffer(GL_ARRAY_BUFFER, 0);
-
         glClear(GL_COLOR_BUFFER_BIT);
+
+        ImGui::Render();
 
         if (g_CurrLatchMode == LATCHMODE_LATE)
         {
+            unsigned char cursorMem[CURSOR_SIZE * CURSOR_SIZE * 4];
+
+            UINT iconFrameRate = 8; // close enough
+            UINT istepIfAniCur = UINT(cursorTimeline / (16.666 * iconFrameRate));
+
+            // Draw the cursor's image into the canvas.
+            ok = DrawIconEx(hdcMem, 0, 0, hCustomCursor, CURSOR_SIZE, CURSOR_SIZE, istepIfAniCur, NULL, DI_IMAGE) != FALSE;
+            if (!ok) {
+                // hack because there's no apparent windows API to know how many frames there are
+                cursorTimeline -= UINT(istepIfAniCur * 16.666 * iconFrameRate);
+                istepIfAniCur = UINT(cursorTimeline / (16.666 * iconFrameRate));
+                ok = DrawIconEx(hdcMem, 0, 0, hCustomCursor, CURSOR_SIZE, CURSOR_SIZE, istepIfAniCur, NULL, DI_IMAGE) != FALSE;
+                assert(ok);
+            }
+
+            // set the color based on the image
+            for (int y = 0; y < CURSOR_SIZE; y++)
+            {
+                for (int x = 0; x < CURSOR_SIZE; x++)
+                {
+                    COLORREF clr = GetPixel(hdcMem, x, CURSOR_SIZE - 1 - y);
+                    cursorMem[(y * CURSOR_SIZE + x) * 4 + 0] = GetRValue(clr);
+                    cursorMem[(y * CURSOR_SIZE + x) * 4 + 1] = GetGValue(clr);
+                    cursorMem[(y * CURSOR_SIZE + x) * 4 + 2] = GetBValue(clr);
+                    cursorMem[(y * CURSOR_SIZE + x) * 4 + 3] = (LOBYTE((clr) >> 24));
+                }
+            }
+
+            // Draw the cursor's mask into the canvas.
+            ok = DrawIconEx(hdcMem, 0, 0, hCustomCursor, CURSOR_SIZE, CURSOR_SIZE, istepIfAniCur, NULL, DI_MASK) != FALSE;
+            assert(ok);
+
+            // set the alpha based on the mask
+            for (int y = 0; y < CURSOR_SIZE; y++)
+            {
+                for (int x = 0; x < CURSOR_SIZE; x++)
+                {
+                    COLORREF clr = GetPixel(hdcMem, x, CURSOR_SIZE - 1 - y);
+                    cursorMem[(y * CURSOR_SIZE + x) * 4 + 3] = clr ? 0 : 255;
+                }
+            }
+
+            // Copy the cursor into the upload buffer
+            glBindBuffer(GL_ARRAY_BUFFER, cursorUploadBuffer);
+            unsigned char* pCursorPBO = (unsigned char*)glMapBufferRange(GL_ARRAY_BUFFER, 0, CURSOR_SIZE * CURSOR_SIZE * 4, GL_MAP_WRITE_BIT);
+            memcpy(pCursorPBO, cursorMem, CURSOR_SIZE * CURSOR_SIZE * 4);
+            glUnmapBuffer(GL_ARRAY_BUFFER);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+            // upload cursor for this frame
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, cursorUploadBuffer);
+            glBindTexture(GL_TEXTURE_2D, cursorTexture);
+            glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, CURSOR_SIZE, CURSOR_SIZE, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+            glBindTexture(GL_TEXTURE_2D, 0);
+            glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+            const GLuint kResetLatch = INPUT_BUFFER_SIZE;
+            glBindBuffer(GL_ARRAY_BUFFER, latchedCounterBuffer);
+            glClearBufferData(GL_ARRAY_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, &kResetLatch);
+            glBindBuffer(GL_ARRAY_BUFFER, 0);
+
             glUseProgram(sp);
-            glEnable(GL_BLEND);
-            glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA); // premultiplied alpha blend function
 
             glBindBuffersBase(GL_SHADER_STORAGE_BUFFER, INPUT_BUFFER_SSBO_BINDING, 1, &inputBuffer);
             glBindBuffersBase(GL_SHADER_STORAGE_BUFFER, INPUT_COUNTER_BUFFER_SSBO_BINDING, 1, &inputCounterBuffer);
@@ -465,14 +587,17 @@ void main()
 
             glBindTextures(CURSOR_TEXTURE_TEXTURE_BINDING, 1, NULL);
 
-            glBlendFunc(GL_ONE, GL_ZERO);
-            glDisable(GL_BLEND);
             glUseProgram(0);
         }
 
-        ImGui::Render();
-
         ok = SwapBuffers(hDC) != FALSE;
         assert(ok);
+
+        if (finishAtEndOfFrame)
+        {
+            glFinish();
+        }
+
+        then = now;
     }
 }
