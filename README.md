@@ -20,6 +20,8 @@ Thanks to Ian Ashmore for the screenshot below taken on NVIDIA GTX 1060.
 
 Thanks to Per and Michael Cameron for the discussion that inspired adding a fullscreen toggle.
 
+Thanks to Li Ji ("Lucky") for the suggestion to add an option to disable sleeping in the window thread.
+
 ## Sample Image
 
 <img src="http://i.imgur.com/otnYpmL.png" width="600">
