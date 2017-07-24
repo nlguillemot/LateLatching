@@ -40,7 +40,7 @@ struct InputBufferItem
 #define INPUT_BUFFER_ITEM_X_OFFSET (offsetof(InputBufferItem, x) / 4)
 #define INPUT_BUFFER_ITEM_Y_OFFSET (offsetof(InputBufferItem, y) / 4)
 
-#define INPUT_BUFFER_SIZE 1024
+#define INPUT_BUFFER_SIZE 16384
 static_assert((INPUT_BUFFER_SIZE & (INPUT_BUFFER_SIZE - 1)) == 0, "");
 
 #define INPUT_BUFFER_SIZE_IN_BYTES (INPUT_BUFFER_SIZE * sizeof(InputBufferItem))
@@ -71,14 +71,18 @@ static HCURSOR hCustomCursor = LoadCursorFromFile(TEXT("Ragnarok.ani"));
 
 bool g_HideCursor;
 
+bool g_NoSleepWindowThread;
+
 void UpdateLateLatchBuffer(int x, int y)
 {
     if ((g_CurrLatchMode == LATCHMODE_LATE || g_CurrLatchMode == LATCHMODE_ALL) && g_MappedInputBufferItems && g_MappedInputCounter)
     {
-        g_InputCounter = (g_InputCounter + 1) & (INPUT_BUFFER_SIZE - 1);
-        g_MappedInputBufferItems[g_InputCounter].x = x;
-        g_MappedInputBufferItems[g_InputCounter].y = y;
-        *g_MappedInputCounter = g_InputCounter;
+        LONG inputCounter = InterlockedAdd((LONG*)&g_InputCounter, 1);
+        inputCounter = inputCounter & (INPUT_BUFFER_SIZE - 1);
+
+        g_MappedInputBufferItems[inputCounter].x = x;
+        g_MappedInputBufferItems[inputCounter].y = y;
+        *g_MappedInputCounter = inputCounter;
     }
 }
 
@@ -158,27 +162,39 @@ void WindowMain(std::promise<HWND> hWndPromise)
 
     for (;;)
     {
-        DWORD nCount = 0;
-        const HANDLE* pHandles = NULL;
-        DWORD result = MsgWaitForMultipleObjectsEx(nCount, pHandles, INFINITE, QS_ALLINPUT, 0);
-        assert(result >= WAIT_OBJECT_0 && result <= WAIT_OBJECT_0 + nCount);
-
-        // WAIT_OBJECT_0 + nCount means it was a window message
-        if (result == WAIT_OBJECT_0 + nCount)
+        if (!g_NoSleepWindowThread)
         {
-            MSG msg;
-            BOOL bMsgRet;
-            while ((bMsgRet = PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) != 0)
-            {
-                assert(bMsgRet != -1);
-                if (bMsgRet == -1)
-                {
-                    continue;
-                }
+            DWORD nCount = 0;
+            const HANDLE* pHandles = NULL;
+            DWORD result = MsgWaitForMultipleObjectsEx(nCount, pHandles, INFINITE, QS_ALLINPUT, 0);
+            assert(result >= WAIT_OBJECT_0 && result <= WAIT_OBJECT_0 + nCount);
 
-                TranslateMessage(&msg);
-                DispatchMessageW(&msg);
+            // WAIT_OBJECT_0 + nCount means it was a window message
+            if (result != WAIT_OBJECT_0 + nCount)
+            {
+                continue;
             }
+        }
+
+        POINT cursor;
+        RECT rect;
+        if (GetCursorPos(&cursor) && ScreenToClient(hWnd, &cursor) && GetClientRect(hWnd, &rect))
+        {
+            UpdateLateLatchBuffer(cursor.x, (rect.bottom - rect.top) - 1 - cursor.y);
+        }
+        
+        MSG msg;
+        BOOL bMsgRet;
+        while ((bMsgRet = PeekMessage(&msg, NULL, 0, 0, PM_REMOVE)) != 0)
+        {
+            assert(bMsgRet != -1);
+            if (bMsgRet == -1)
+            {
+                continue;
+            }
+
+            TranslateMessage(&msg);
+            DispatchMessageW(&msg);
         }
     }
 }
@@ -451,7 +467,8 @@ void main()
 
     pInputBuffer[0] = InputBufferItem{ 0, 0 };
     *pInputCounter = 0;
-
+    
+    g_InputCounter = 1;
     g_MappedInputBufferItems = pInputBuffer;
     g_MappedInputCounter = pInputCounter;
 
@@ -584,6 +601,8 @@ void main()
             ImGui::InputInt("Sleep milliseconds before drawing", &sleepBeforeDraw);
             if (sleepBeforeDraw < 0)
                 sleepBeforeDraw = 0;
+
+            ImGui::Checkbox("Never sleep the Window thread", &g_NoSleepWindowThread);
         }
         ImGui::End();
 
