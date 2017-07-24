@@ -22,13 +22,14 @@ enum LatchMode
     LATCHMODE_LATE,
     LATCHMODE_UNIFORM,
     LATCHMODE_SETCURSOR,
+    LATCHMODE_ALL,
     LATCHMODE_COUNT
 };
 
 int g_CurrLatchMode;
 
-#define RENDER_WIDTH 640
-#define RENDER_HEIGHT 480
+#define RENDER_WIDTH 1280
+#define RENDER_HEIGHT 720
 
 struct InputBufferItem
 {
@@ -55,6 +56,7 @@ static_assert((INPUT_BUFFER_SIZE & (INPUT_BUFFER_SIZE - 1)) == 0, "");
 //
 #define PROJECTION_MATRIX_UNIFORM_LOCATION 0
 #define INPUT_UNIFORM_LOCATION             1
+#define TINT_UNIFORM_LOCATION              2
 
 void GLAPIENTRY DebugCallbackGL(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *message, const void *userParam)
 {
@@ -67,9 +69,11 @@ uint32_t g_InputCounter;
 
 static HCURSOR hCustomCursor = LoadCursorFromFile(TEXT("Ragnarok.ani"));
 
+bool g_HideCursor;
+
 void UpdateLateLatchBuffer(int x, int y)
 {
-    if (g_CurrLatchMode == LATCHMODE_LATE && g_MappedInputBufferItems && g_MappedInputCounter)
+    if ((g_CurrLatchMode == LATCHMODE_LATE || g_CurrLatchMode == LATCHMODE_ALL) && g_MappedInputBufferItems && g_MappedInputCounter)
     {
         g_InputCounter = (g_InputCounter + 1) & (INPUT_BUFFER_SIZE - 1);
         g_MappedInputBufferItems[g_InputCounter].x = x;
@@ -85,14 +89,21 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     case WM_CLOSE:
         ExitProcess(0);
     case WM_SETCURSOR:
-        if (g_CurrLatchMode == LATCHMODE_SETCURSOR)
+        if (g_HideCursor)
         {
-            assert(hCustomCursor != NULL);
-            SetCursor(hCustomCursor);
+            SetCursor(NULL);
         }
         else
         {
-            SetCursor(LoadCursor(NULL, IDC_ARROW));
+            if (g_CurrLatchMode == LATCHMODE_SETCURSOR || g_CurrLatchMode == LATCHMODE_ALL)
+            {
+                assert(hCustomCursor != NULL);
+                SetCursor(hCustomCursor);
+            }
+            else
+            {
+                SetCursor(LoadCursor(NULL, IDC_ARROW));
+            }
         }
         break;
     case WM_KEYDOWN:
@@ -248,7 +259,8 @@ int main()
         "#define LATCHED_COUNTER_BUFFER_SSBO_BINDING " + std::to_string(LATCHED_COUNTER_BUFFER_SSBO_BINDING) + "\n" +
         "#define CURSOR_TEXTURE_TEXTURE_BINDING " + std::to_string(CURSOR_TEXTURE_TEXTURE_BINDING) + "\n" +
         "#define PROJECTION_MATRIX_UNIFORM_LOCATION " + std::to_string(PROJECTION_MATRIX_UNIFORM_LOCATION) + "\n" +
-        "#define INPUT_UNIFORM_LOCATION " + std::to_string(INPUT_UNIFORM_LOCATION) + "\n";
+        "#define INPUT_UNIFORM_LOCATION " + std::to_string(INPUT_UNIFORM_LOCATION) + "\n" +
+        "#define TINT_UNIFORM_LOCATION " + std::to_string(TINT_UNIFORM_LOCATION) + "\n";
         
     const char* const preamble_cstr = preamble.c_str();
 
@@ -319,13 +331,17 @@ R"GLSL(
 layout(binding = CURSOR_TEXTURE_TEXTURE_BINDING)
 uniform sampler2D CursorTexture;
 
+layout(location = TINT_UNIFORM_LOCATION)
+uniform vec4 Tint;
+
 in vec2 TexCoord;
 
 out vec4 FragColor;
 
 void main()
 {
-    FragColor = texture(CursorTexture, TexCoord);
+    FragColor = texture(CursorTexture, TexCoord) * Tint;
+
     if (FragColor.a == 0.0)
     {
         discard;
@@ -443,6 +459,8 @@ void main()
 
     bool simulateCPUWork = false;
 
+    int sleepBeforeDraw = 0;
+
     ULONGLONG then = GetTickCount64();
 
     for (;;)
@@ -453,16 +471,18 @@ void main()
 
         ImGui_Impl_NewFrame(hWnd);
 
-        if (ImGui::Begin("GUI", 0, ImGuiWindowFlags_AlwaysAutoResize))
+        ImGui::SetNextWindowSize(ImVec2(700, 300), ImGuiSetCond_Always);
+        if (ImGui::Begin("GUI"))
         {
             ImGui::Text("GL_VENDOR: %s\n", glGetString(GL_VENDOR));
             ImGui::Text("GL_RENDERER: %s\n", glGetString(GL_RENDERER));
             ImGui::Text("GL_VERSION: %s\n", glGetString(GL_VERSION));
 
             const char* latchModeNames[LATCHMODE_COUNT] = {};
-            latchModeNames[LATCHMODE_LATE] = "Late-Latching";
-            latchModeNames[LATCHMODE_UNIFORM] = "Pass-by-Uniform";
+            latchModeNames[LATCHMODE_LATE] = "Late-Latching (Red cursor)";
+            latchModeNames[LATCHMODE_UNIFORM] = "Pass-by-Uniform (Green cursor)";
             latchModeNames[LATCHMODE_SETCURSOR] = "Win32 SetCursor";
+            latchModeNames[LATCHMODE_ALL] = "All modes simultaneously";
 
             for (const char* name : latchModeNames)
             {
@@ -470,6 +490,8 @@ void main()
             }
 
             ImGui::ListBox("Mode", &g_CurrLatchMode, latchModeNames, LATCHMODE_COUNT);
+
+            ImGui::Checkbox("Hide OS Cursor (overrides current mode)", &g_HideCursor);
 
             if (adaptiveVSyncSupported)
             {
@@ -517,6 +539,10 @@ void main()
             ImGui::Checkbox("Simulate CPU work (long Sleep() in main loop)", &simulateCPUWork);
 
             ImGui::Checkbox("glFinish at end of frame", &finishAtEndOfFrame);
+
+            ImGui::InputInt("Sleep milliseconds before drawing", &sleepBeforeDraw);
+            if (sleepBeforeDraw < 0)
+                sleepBeforeDraw = 0;
         }
         ImGui::End();
 
@@ -525,11 +551,17 @@ void main()
             Sleep(200);
         }
 
+        if (sleepBeforeDraw > 0)
+        {
+            Sleep(sleepBeforeDraw);
+        }
+
+        glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
 
         ImGui::Render();
 
-        if (g_CurrLatchMode == LATCHMODE_LATE || g_CurrLatchMode == LATCHMODE_UNIFORM)
+        if (g_CurrLatchMode == LATCHMODE_LATE || g_CurrLatchMode == LATCHMODE_UNIFORM || g_CurrLatchMode == LATCHMODE_ALL)
         {
             unsigned char cursorMem[CURSOR_SIZE * CURSOR_SIZE * 4];
 
@@ -555,7 +587,6 @@ void main()
                     cursorMem[(y * CURSOR_SIZE + x) * 4 + 0] = GetRValue(clr);
                     cursorMem[(y * CURSOR_SIZE + x) * 4 + 1] = GetGValue(clr);
                     cursorMem[(y * CURSOR_SIZE + x) * 4 + 2] = GetBValue(clr);
-                    cursorMem[(y * CURSOR_SIZE + x) * 4 + 3] = (LOBYTE((clr) >> 24));
                 }
             }
 
@@ -587,49 +618,89 @@ void main()
             glBindTexture(GL_TEXTURE_2D, 0);
             glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
-            if (g_CurrLatchMode == LATCHMODE_LATE)
+            // iterator for LATCHMODE_ALL
+            for (int currLatchLoopMode = g_CurrLatchMode == LATCHMODE_ALL ? 0 : g_CurrLatchMode; 
+                currLatchLoopMode < LATCHMODE_ALL; 
+                currLatchLoopMode++)
             {
-                const GLuint kResetLatch = INPUT_BUFFER_SIZE;
-                glBindBuffer(GL_ARRAY_BUFFER, latchedCounterBuffer);
-                glClearBufferData(GL_ARRAY_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, &kResetLatch);
-                glBindBuffer(GL_ARRAY_BUFFER, 0);
+                if (currLatchLoopMode == LATCHMODE_SETCURSOR)
+                {
+                    // don't have to draw this one, Windows does it for us.
+                    continue;
+                }
 
-                glUseProgram(latched_sp);
+                if (currLatchLoopMode == LATCHMODE_LATE)
+                {
+                    const GLuint kResetLatch = INPUT_BUFFER_SIZE;
+                    glBindBuffer(GL_ARRAY_BUFFER, latchedCounterBuffer);
+                    glClearBufferData(GL_ARRAY_BUFFER, GL_R32UI, GL_RED_INTEGER, GL_UNSIGNED_INT, &kResetLatch);
+                    glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-                glBindBuffersBase(GL_SHADER_STORAGE_BUFFER, INPUT_BUFFER_SSBO_BINDING, 1, &inputBuffer);
-                glBindBuffersBase(GL_SHADER_STORAGE_BUFFER, INPUT_COUNTER_BUFFER_SSBO_BINDING, 1, &inputCounterBuffer);
-                glBindBuffersBase(GL_SHADER_STORAGE_BUFFER, LATCHED_COUNTER_BUFFER_SSBO_BINDING, 1, &latchedCounterBuffer);
+                    glUseProgram(latched_sp);
+
+                    glBindBuffersBase(GL_SHADER_STORAGE_BUFFER, INPUT_BUFFER_SSBO_BINDING, 1, &inputBuffer);
+                    glBindBuffersBase(GL_SHADER_STORAGE_BUFFER, INPUT_COUNTER_BUFFER_SSBO_BINDING, 1, &inputCounterBuffer);
+                    glBindBuffersBase(GL_SHADER_STORAGE_BUFFER, LATCHED_COUNTER_BUFFER_SSBO_BINDING, 1, &latchedCounterBuffer);
+                }
+
+                if (currLatchLoopMode == LATCHMODE_UNIFORM)
+                {
+                    glUseProgram(uniform_sp);
+
+                    POINT cursorPos;
+                    GetCursorPos(&cursorPos);
+                    ScreenToClient(hWnd, &cursorPos);
+
+                    glUniform2ui(INPUT_UNIFORM_LOCATION, cursorPos.x, RENDER_HEIGHT - 1 - cursorPos.y);
+                }
+
+                glBindTextures(CURSOR_TEXTURE_TEXTURE_BINDING, 1, &cursorTexture);
+
+                GLfloat ortho[] = {
+                    2.0f / RENDER_WIDTH, 0.0f, 0.0f, 0.0f,
+                    0.0f, 2.0f / RENDER_HEIGHT, 0.0f, 0.0f,
+                    0.0f, 0.0f, -1.0f, 0.0f,
+                    -1.0f, -1.0f, 0.0f, 1.0f
+                };
+
+                glUniformMatrix4fv(PROJECTION_MATRIX_UNIFORM_LOCATION, 1, GL_FALSE, ortho);
+
+                float kModeTint[LATCHMODE_COUNT][4] = {};
+                
+                kModeTint[LATCHMODE_LATE][0] = 1.0f;
+                kModeTint[LATCHMODE_LATE][1] = 0.0f;
+                kModeTint[LATCHMODE_LATE][2] = 0.0f;
+                kModeTint[LATCHMODE_LATE][3] = 1.0f;
+
+                kModeTint[LATCHMODE_UNIFORM][0] = 0.0f;
+                kModeTint[LATCHMODE_UNIFORM][1] = 1.0f;
+                kModeTint[LATCHMODE_UNIFORM][2] = 0.0f;
+                kModeTint[LATCHMODE_UNIFORM][3] = 1.0f;
+
+                assert(kModeTint[currLatchLoopMode][3] != 0.0f);
+
+                glUniform4fv(TINT_UNIFORM_LOCATION, 1, kModeTint[currLatchLoopMode]);
+
+                glEnable(GL_BLEND);
+                glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+                glBindVertexArray(nullVAO);
+                glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+                glBindVertexArray(0);
+
+                glBlendFunc(GL_ONE, GL_ZERO);
+                glDisable(GL_BLEND);
+
+                glBindBuffersBase(GL_SHADER_STORAGE_BUFFER, 0, 16, NULL);
+                glBindTextures(0, 16, NULL);
+
+                glUseProgram(0);
+
+                if (g_CurrLatchMode != LATCHMODE_ALL)
+                {
+                    break;
+                }
             }
-            else if (g_CurrLatchMode == LATCHMODE_UNIFORM)
-            {
-                glUseProgram(uniform_sp);
-
-                POINT cursorPos;
-                GetCursorPos(&cursorPos);
-                ScreenToClient(hWnd, &cursorPos);
-
-                glUniform2ui(INPUT_UNIFORM_LOCATION, cursorPos.x, RENDER_HEIGHT - 1 - cursorPos.y);
-            }
-
-            glBindTextures(CURSOR_TEXTURE_TEXTURE_BINDING, 1, &cursorTexture);
-
-            GLfloat ortho[] = {
-                2.0f / RENDER_WIDTH, 0.0f, 0.0f, 0.0f,
-                0.0f, 2.0f / RENDER_HEIGHT, 0.0f, 0.0f,
-                0.0f, 0.0f, -1.0f, 0.0f,
-                -1.0f, -1.0f, 0.0f, 1.0f
-            };
-
-            glUniformMatrix4fv(PROJECTION_MATRIX_UNIFORM_LOCATION, 1, GL_FALSE, ortho);
-
-            glBindVertexArray(nullVAO);
-            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-            glBindVertexArray(0);
-
-            glBindBuffersBase(GL_SHADER_STORAGE_BUFFER, 0, 16, NULL);
-            glBindTextures(0, 16, NULL);
-
-            glUseProgram(0);
         }
 
         ok = SwapBuffers(hDC) != FALSE;
