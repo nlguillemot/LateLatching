@@ -22,6 +22,4 @@ Thanks to Ian Ashmore for the screenshot below taken on NVIDIA GTX 1060.
 
 <img src="http://i.imgur.com/otnYpmL.png" width="600">
 
-Thanks to @ianeh for the screenshot below that shows the difference between the two modes:
-
 <img src="http://i.imgur.com/4IiKDB0.jpg" width="600">
