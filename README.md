@@ -10,6 +10,8 @@ Every time a new input comes in, it gets pushed to a ring buffer. When the verte
 
 All the relevant source code is inside [main.cpp](main.cpp). The shaders are string literals.
 
+Thanks to Per Vognsen for suggesting to add a mode that compares all techniques, and a tweakable delay before the start of each frame.
+
 ## Sample Image
 
-<img src="http://i.imgur.com/IsEr2SG.png" width="600">
+<img src="http://i.imgur.com/otnYpmL.png" width="600">
