@@ -319,7 +319,7 @@ void main()
 {
     TexCoord = vec2(gl_VertexID % 2, gl_VertexID / 2);
 
-    gl_Position = ProjectionMatrix * vec4(vec2(Input) + TexCoord * CURSOR_SIZE - vec2(0, CURSOR_SIZE), 0, 1);
+    gl_Position = ProjectionMatrix * vec4(vec2(Input + vec2(0.5)) + TexCoord * CURSOR_SIZE - vec2(0, CURSOR_SIZE), 0, 1);
 }
 )GLSL"
     };
@@ -398,6 +398,7 @@ void main()
     glGenTextures(1, &cursorTexture);
     glBindTexture(GL_TEXTURE_2D, cursorTexture);
     glTexStorage2D(GL_TEXTURE_2D, 1, GL_RGBA8, CURSOR_SIZE, CURSOR_SIZE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glBindTexture(GL_TEXTURE_2D, 0);
 
     GLuint cursorUploadBuffer;
