@@ -67,6 +67,17 @@ uint32_t g_InputCounter;
 
 static HCURSOR hCustomCursor = LoadCursorFromFile(TEXT("Ragnarok.ani"));
 
+void UpdateLateLatchBuffer(int x, int y)
+{
+    if (g_CurrLatchMode == LATCHMODE_LATE && g_MappedInputBufferItems && g_MappedInputCounter)
+    {
+        g_InputCounter = (g_InputCounter + 1) & (INPUT_BUFFER_SIZE - 1);
+        g_MappedInputBufferItems[g_InputCounter].x = x;
+        g_MappedInputBufferItems[g_InputCounter].y = y;
+        *g_MappedInputCounter = g_InputCounter;
+    }
+}
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     switch (msg)
@@ -89,13 +100,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
             ExitProcess(0);
         break;
     case WM_MOUSEMOVE:
-        if (g_CurrLatchMode == LATCHMODE_LATE && g_MappedInputBufferItems && g_MappedInputCounter)
-        {
-            g_InputCounter = (g_InputCounter + 1) & (INPUT_BUFFER_SIZE - 1);
-            g_MappedInputBufferItems[g_InputCounter].x = GET_X_LPARAM(lParam);
-            g_MappedInputBufferItems[g_InputCounter].y = RENDER_HEIGHT - 1 - GET_Y_LPARAM(lParam);
-            *g_MappedInputCounter = g_InputCounter;
-        }
+        UpdateLateLatchBuffer(GET_X_LPARAM(lParam), RENDER_HEIGHT - 1 - GET_Y_LPARAM(lParam));
         break;
     }
 
@@ -403,14 +408,14 @@ void main()
     GLuint inputBuffer;
     glGenBuffers(1, &inputBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, inputBuffer);
-    glBufferStorage(GL_ARRAY_BUFFER, INPUT_BUFFER_SIZE_IN_BYTES, NULL, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+    glBufferStorage(GL_ARRAY_BUFFER, INPUT_BUFFER_SIZE_IN_BYTES, NULL, GL_CLIENT_STORAGE_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
     InputBufferItem* pInputBuffer = (InputBufferItem*)glMapBufferRange(GL_ARRAY_BUFFER, 0, INPUT_BUFFER_SIZE_IN_BYTES, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
     GLuint inputCounterBuffer;
     glGenBuffers(1, &inputCounterBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, inputCounterBuffer);
-    glBufferStorage(GL_ARRAY_BUFFER, sizeof(GLuint), NULL, GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+    glBufferStorage(GL_ARRAY_BUFFER, sizeof(GLuint), NULL, GL_CLIENT_STORAGE_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
     GLuint* pInputCounter = (GLuint*)glMapBufferRange(GL_ARRAY_BUFFER, 0, sizeof(GLuint), GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
@@ -420,7 +425,7 @@ void main()
     glBufferStorage(GL_ARRAY_BUFFER, sizeof(GLuint), NULL, 0);
     glBindBuffer(GL_ARRAY_BUFFER, 0);
 
-    pInputBuffer[0] = InputBufferItem{ 200, 200 };
+    pInputBuffer[0] = InputBufferItem{ 0, 0 };
     *pInputCounter = 0;
 
     g_MappedInputBufferItems = pInputBuffer;
@@ -435,6 +440,8 @@ void main()
     bool adaptiveVSync = false;
     int swapInterval = 0;
     bool swapIntervalOK = true;
+
+    bool simulateCPUWork = false;
 
     ULONGLONG then = GetTickCount64();
 
@@ -507,9 +514,16 @@ void main()
                 }
             }
 
+            ImGui::Checkbox("Simulate CPU work (long Sleep() in main loop)", &simulateCPUWork);
+
             ImGui::Checkbox("glFinish at end of frame", &finishAtEndOfFrame);
         }
         ImGui::End();
+
+        if (simulateCPUWork)
+        {
+            Sleep(200);
+        }
 
         glClear(GL_COLOR_BUFFER_BIT);
 
@@ -526,7 +540,7 @@ void main()
             ok = DrawIconEx(hdcMem, 0, 0, hCustomCursor, CURSOR_SIZE, CURSOR_SIZE, istepIfAniCur, NULL, DI_IMAGE) != FALSE;
             if (!ok) {
                 // hack because there's no apparent windows API to know how many frames there are
-                cursorTimeline -= UINT(istepIfAniCur * 16.666 * iconFrameRate);
+                cursorTimeline = cursorTimeline % UINT(istepIfAniCur * 16.666 * iconFrameRate);
                 istepIfAniCur = UINT(cursorTimeline / (16.666 * iconFrameRate));
                 ok = DrawIconEx(hdcMem, 0, 0, hCustomCursor, CURSOR_SIZE, CURSOR_SIZE, istepIfAniCur, NULL, DI_IMAGE) != FALSE;
                 assert(ok);
