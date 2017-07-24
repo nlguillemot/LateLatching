@@ -84,6 +84,8 @@ void UpdateLateLatchBuffer(int x, int y)
 
 LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
+    bool ok;
+
     switch (msg)
     {
     case WM_CLOSE:
@@ -110,9 +112,14 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
         if (wParam == VK_ESCAPE)
             ExitProcess(0);
         break;
-    case WM_MOUSEMOVE:
-        UpdateLateLatchBuffer(GET_X_LPARAM(lParam), RENDER_HEIGHT - 1 - GET_Y_LPARAM(lParam));
+    case WM_MOUSEMOVE: {
+        RECT client;
+        ok = GetClientRect(hWnd, &client);
+        assert(ok);
+
+        UpdateLateLatchBuffer(GET_X_LPARAM(lParam), (client.bottom - client.top) - 1 - GET_Y_LPARAM(lParam));
         break;
+    }
     }
 
     return DefWindowProc(hWnd, msg, wParam, lParam);
@@ -140,7 +147,7 @@ void WindowMain(std::promise<HWND> hWndPromise)
     // Create window that will be used to create a GL context
     HWND hWnd = CreateWindow(
         TEXT("WindowClass"), title, dwStyle,
-        CW_USEDEFAULT, CW_USEDEFAULT,
+        0, 0,
         wr.right - wr.left, wr.bottom - wr.top,
         0, 0, GetModuleHandle(NULL), 0);
     assert(hWnd != NULL);
@@ -448,6 +455,8 @@ void main()
     g_MappedInputBufferItems = pInputBuffer;
     g_MappedInputCounter = pInputCounter;
 
+    bool isFullscreen = false;
+
     bool finishAtEndOfFrame = true;
 
     PFNWGLGETEXTENSIONSSTRINGARBPROC wglGetExtensionsStringARB = (PFNWGLGETEXTENSIONSSTRINGARBPROC)wglGetProcAddress("wglGetExtensionsStringARB");
@@ -472,7 +481,7 @@ void main()
 
         ImGui_Impl_NewFrame(hWnd);
 
-        ImGui::SetNextWindowSize(ImVec2(700, 300), ImGuiSetCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(700, 350), ImGuiSetCond_Always);
         if (ImGui::Begin("GUI"))
         {
             ImGui::Text("GL_VENDOR: %s\n", glGetString(GL_VENDOR));
@@ -491,6 +500,37 @@ void main()
             }
 
             ImGui::ListBox("Mode", &g_CurrLatchMode, latchModeNames, LATCHMODE_COUNT);
+
+            if (ImGui::Checkbox("Fullscreen", &isFullscreen))
+            {
+                if (isFullscreen)
+                {
+                    // windowed -> fullscreen
+                    HMONITOR hMonitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTOPRIMARY);
+                    assert(hMonitor != NULL);
+
+                    MONITORINFO monitorInfo = {};
+                    monitorInfo.cbSize = sizeof(monitorInfo);
+                    ok = GetMonitorInfoW(hMonitor, &monitorInfo) != FALSE;
+                    assert(ok);
+
+                    int monitorWidth = monitorInfo.rcMonitor.right - monitorInfo.rcMonitor.left;
+                    int monitorHeight = monitorInfo.rcMonitor.bottom - monitorInfo.rcMonitor.top;
+                    ok = SetWindowPos(hWnd, HWND_TOP, monitorInfo.rcMonitor.left, monitorInfo.rcMonitor.top, monitorWidth, monitorHeight, SWP_SHOWWINDOW) != 0;
+                    assert(ok);
+
+                }
+                else
+                {
+                    // fullscreen -> windowed
+                    RECT wr = { 0, 0, RENDER_WIDTH, RENDER_HEIGHT };
+                    ok = AdjustWindowRect(&wr, WS_OVERLAPPEDWINDOW, FALSE) != FALSE;
+                    assert(ok);
+
+                    ok = SetWindowPos(hWnd, HWND_TOP, wr.left, wr.top, wr.right - wr.left, wr.bottom - wr.top, SWP_SHOWWINDOW) != 0;
+                    assert(ok);
+                }
+            }
 
             ImGui::Checkbox("Hide OS Cursor (overrides current mode)", &g_HideCursor);
 
@@ -557,8 +597,13 @@ void main()
             Sleep(sleepBeforeDraw);
         }
 
+        RECT client;
+        ok = GetClientRect(hWnd, &client);
+        assert(ok);
+
         glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT);
+        glViewport(0, 0, client.right - client.left, client.bottom - client.top);
 
         ImGui::Render();
 
@@ -652,14 +697,14 @@ void main()
                     GetCursorPos(&cursorPos);
                     ScreenToClient(hWnd, &cursorPos);
 
-                    glUniform2ui(INPUT_UNIFORM_LOCATION, cursorPos.x, RENDER_HEIGHT - 1 - cursorPos.y);
+                    glUniform2ui(INPUT_UNIFORM_LOCATION, cursorPos.x, (client.bottom - client.top) - 1 - cursorPos.y);
                 }
 
                 glBindTextures(CURSOR_TEXTURE_TEXTURE_BINDING, 1, &cursorTexture);
 
                 GLfloat ortho[] = {
-                    2.0f / RENDER_WIDTH, 0.0f, 0.0f, 0.0f,
-                    0.0f, 2.0f / RENDER_HEIGHT, 0.0f, 0.0f,
+                    2.0f / (client.right - client.left), 0.0f, 0.0f, 0.0f,
+                    0.0f, 2.0f / (client.bottom - client.top), 0.0f, 0.0f,
                     0.0f, 0.0f, -1.0f, 0.0f,
                     -1.0f, -1.0f, 0.0f, 1.0f
                 };
