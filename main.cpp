@@ -670,12 +670,12 @@ void main()
                 kModeTint[LATCHMODE_LATE][0] = 1.0f;
                 kModeTint[LATCHMODE_LATE][1] = 0.0f;
                 kModeTint[LATCHMODE_LATE][2] = 0.0f;
-                kModeTint[LATCHMODE_LATE][3] = 1.0f;
+                kModeTint[LATCHMODE_LATE][3] = 0.5f;
 
                 kModeTint[LATCHMODE_UNIFORM][0] = 0.0f;
                 kModeTint[LATCHMODE_UNIFORM][1] = 1.0f;
                 kModeTint[LATCHMODE_UNIFORM][2] = 0.0f;
-                kModeTint[LATCHMODE_UNIFORM][3] = 1.0f;
+                kModeTint[LATCHMODE_UNIFORM][3] = 0.5f;
 
                 assert(kModeTint[currLatchLoopMode][3] != 0.0f);
 
