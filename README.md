@@ -18,6 +18,8 @@ Thanks to Per Vognsen for suggesting to add a mode that compares all techniques,
 
 Thanks to Ian Ashmore for the screenshot below taken on NVIDIA GTX 1060.
 
+Thanks to Per and Michael Cameron for the discussion that inspired adding a fullscreen toggle.
+
 ## Sample Image
 
 <img src="http://i.imgur.com/otnYpmL.png" width="600">
